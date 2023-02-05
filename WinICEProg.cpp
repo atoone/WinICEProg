@@ -81,6 +81,30 @@ uint8_t buffer_file[0x200000];
 
 void serial_read(int x);
 
+int parseAddress(char* arg) {
+	char* endptr;
+	long size = strtol(arg, &endptr, 10);
+	switch (*endptr) {
+	case 'k':
+	case 'K':
+		size *= 1024;
+		break;
+	case 'm':
+	case 'M':
+		size *= 1024 * 1024;
+		break;
+	default:
+		break;
+	}
+	if (size > INT_MAX) {
+		// Handle case when the result is larger than INT_MAX
+		return -1;
+	}
+	return (int)size;
+}
+
+int _tmain(int argc, _TCHAR* argv[]);
+
 #define FEND	0xc0
 #define FESC	0xdb
 #define TFEND 	0xdc
@@ -97,6 +121,8 @@ uint16_t txp,rxp;
 uint8_t membuf[0x200000];
 uint8_t pages[0x2000];
 
+int base_address = 0;
+ 
 bool verbose = false;
 
 // Windows related serial port structures
@@ -431,13 +457,15 @@ void help(const char *progname)
 	fprintf(stderr, "\n");
 	fprintf(stderr, "Usage: %s [options] <filename>\n", progname);
 	fprintf(stderr, "\n");
-	fprintf(stderr, "-e : erase Flash memory\n");
+	fprintf(stderr, "-e : only erase Flash memory\n");
 	fprintf(stderr, "-w : write only, do not verify\n");
 	fprintf(stderr, "-f : write all data, including 0xFF's pages\n");	
 	fprintf(stderr, "-I<serialport> : port to connect Arduino\n");	
 	fprintf(stderr, "-r : read entire flash (2MB) and write to file\n");
 	fprintf(stderr, "-c : do not write flash, only verify (check)\n");
-	fprintf(stderr, "-b : bulk erase entire flash before writing\n");
+	fprintf(stderr, "-o <n>: Write from address n. Use k or M for kilobyte or Megabyte offset\n");
+	fprintf(stderr, "-b : bulk erase entire flash before writing (default, except after -o is used)\n");
+	fprintf(stderr, "-B : don't bulk erase\n");
 	fprintf(stderr, "-n : do not erase flash before writing\n");
 	fprintf(stderr, "-t : just read the flash ID sequence\n");
 	fprintf(stderr, "-v : verbose output\n");
@@ -556,7 +584,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	int max_read_size = 0x200000;
 	bool read_mode = false;
 	bool check_mode = false;
-	bool bulk_erase = false;
+	bool bulk_erase = true; // Default
 	bool prog_sram = false;
 	bool test_mode = false;
 	bool noverify = true; // verify performs by arduino board
@@ -569,7 +597,7 @@ int _tmain(int argc, _TCHAR* argv[])
 	int errcode;
 
 	// Browse all arguments in command line
-	while ((opt = getopt(argc, argv, "I:rcbntvwfeh")) != -1)
+	while ((opt = getopt(argc, argv, "I:rcbBntvwfeho:")) != -1)
 	{
 		switch (opt)
 		{
@@ -578,6 +606,11 @@ int _tmain(int argc, _TCHAR* argv[])
 			break;
 		case 'I':
 			portname = optarg;
+			break;
+		case 'o':
+			base_address = parseAddress(optarg);
+			if (base_address < 0) help(argv[0]);
+			bulk_erase = false;
 			break;
 		case 'r':
 			read_mode = true;
@@ -599,6 +632,9 @@ int _tmain(int argc, _TCHAR* argv[])
 			break;
 		case 'b':
 			bulk_erase = true;
+			break;
+		case 'B':
+			bulk_erase = false;
 			break;
 		case 'n':
 			dont_erase = true;
@@ -625,15 +661,11 @@ int _tmain(int argc, _TCHAR* argv[])
 	if (read_mode + check_mode + prog_sram + test_mode > 1)
 		help(argv[0]);
 
-	if (bulk_erase && dont_erase)
-		help(argv[0]);
-
 	if (optind+1 != argc && !test_mode && !bulk_erase_only)
 		help(argv[0]);
 
 	filename = argv[optind];
 
-	bulk_erase = true;  // comment this line if you do not want to bulk erase by default
 			   
 	// Activate serial port
 	errcode=set_interface_attribs (portname);  // set speed to 57600 bps, 8n1 (no parity)
@@ -646,6 +678,8 @@ int _tmain(int argc, _TCHAR* argv[])
 
     fprintf(stderr,"Serial: %s: %s\n",  portname, strerror (errno));
  
+	if( base_address != 0 ) fprintf(stderr, "Programming from offset %d\n", base_address);
+
 	// Execute commands depending on the flags
 	rxp = 0;
 	
@@ -693,10 +727,17 @@ int _tmain(int argc, _TCHAR* argv[])
 						error();
 					}
 
-					fprintf(stderr, "file size: %d\n", (int)st_buf.st_size);
-					for (addr = 0; addr < st_buf.st_size; addr += 0x10000) 
+					if ((base_address & 0xffff) != 0) {
+						fprintf(stderr, "Warning: Offset address is not on 64K boundary, erase is extended to nearest boundary\n");
+					}
+
+					int begin_addr = base_address & ~0xffff;
+					int end_addr = (base_address + st_buf.st_size + 0xffff) & ~0xffff;
+
+					fprintf(stderr, "Erasing from %d to %d. File size: %d\n", begin_addr, end_addr, (int)st_buf.st_size);
+					for (addr = begin_addr; addr < end_addr; addr += 0x10000)
 					{
-						flash_64kB_sector_erase(addr);	
+						flash_64kB_sector_erase(addr);
 					}
 				}
 			}
@@ -709,7 +750,7 @@ int _tmain(int argc, _TCHAR* argv[])
 			PurgeComm(hSerial, PURGE_RXCLEAR);
 			PurgeComm(hSerial, PURGE_TXCLEAR);
 
-			for (addr = 0; true; addr += 256) 
+			for (addr = base_address; true; addr += 256) 
 			{
 				uint8_t buffer[256];
 				int rc = fread(buffer, 1, 256, f);
@@ -792,7 +833,7 @@ int _tmain(int argc, _TCHAR* argv[])
 				flash_read_all();
 				int rc = fread(buffer_file, 1, 0x200000, f);
 				
-				if (memcmp(buffer_file, membuf, rc)) 
+				if (memcmp(buffer_file, membuf+base_address, rc)) 
 				{
 					fprintf(stderr, "Found difference between flash and file!\n");
 					error();
