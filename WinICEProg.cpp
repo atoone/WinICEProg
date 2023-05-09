@@ -262,7 +262,7 @@ void sendframe()
 		return;
 	}  
 
-	Sleep (20);		// Give time to Galileo to process the previous packet
+	Sleep (40);		// Give time to Galileo to process the previous packet
 	if (SecondBlockSize>0)
 	{
 		if(!WriteFile(hSerial, &txframe[255], SecondBlockSize, &bytes_written, NULL))
@@ -389,8 +389,8 @@ void flash_64kB_sector_erase(int addr)
 	fprintf(stderr, "Erase 64kB sector at 0x%06X..", addr);
    //mode = true;
 	startframe(SEC_ERASE);
+	addbyte(addr>>16);
 	addbyte(addr>>8);
-	addbyte(addr>>0);
 	sendframe();
     waitframe(READY);
     fprintf(stderr, "Erased\n");
@@ -746,6 +746,7 @@ int _tmain(int argc, _TCHAR* argv[])
 			flash_read_id();
 			fprintf(stderr, "Programming..\n");
 			int ccc;	
+			usleep(100000); // Short pause..
 
 			PurgeComm(hSerial, PURGE_RXCLEAR);
 			PurgeComm(hSerial, PURGE_TXCLEAR);
@@ -774,7 +775,7 @@ int _tmain(int argc, _TCHAR* argv[])
 							for (x=0;x<rc;x++)
 								addbyte(buffer[x]);
 							sendframe();
-							
+							usleep(5000); // Short pause..
 							if (waitframe(READY)) 
 							{
 								if (verbose)
